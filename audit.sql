@@ -38,9 +38,6 @@ COMMENT ON SCHEMA audit IS 'Out-of-table audit/history logging tables and trigge
 --
 CREATE TABLE audit.logged_actions (
     event_id bigserial primary key,
-    schema_name text not null,
-    table_name text not null,
-    session_user_name text,
     action_tstamp_stm TIMESTAMP WITH TIME ZONE NOT NULL,
     action TEXT NOT NULL CHECK (action IN ('I','D','U', 'T')),
     row_data hstore,
@@ -52,8 +49,6 @@ REVOKE ALL ON audit.logged_actions FROM public;
 
 COMMENT ON TABLE audit.logged_actions IS 'History of auditable actions on audited tables, from audit.if_modified_func()';
 COMMENT ON COLUMN audit.logged_actions.event_id IS 'Unique identifier for each auditable event';
-COMMENT ON COLUMN audit.logged_actions.schema_name IS 'Database schema audited table for this event is in';
-COMMENT ON COLUMN audit.logged_actions.table_name IS 'Non-schema-qualified table name of table event occured in';
 COMMENT ON COLUMN audit.logged_actions.action_tstamp_stm IS 'Statement start timestamp for tx in which audited event occurred';
 COMMENT ON COLUMN audit.logged_actions.action IS 'Action type; I = insert, D = delete, U = update, T = truncate';
 COMMENT ON COLUMN audit.logged_actions.row_data IS 'Record value. Null for statement-level trigger. For INSERT this is the new tuple. For DELETE and UPDATE it is the old tuple.';
@@ -78,9 +73,6 @@ BEGIN
 
     audit_row = ROW(
         nextval('audit.logged_actions_event_id_seq'), -- event_id
-        TG_TABLE_SCHEMA::text,                        -- schema_name
-        TG_TABLE_NAME::text,                          -- table_name
-        session_user::text,                           -- session_user_name
         statement_timestamp(),                        -- action_tstamp_stm
         substring(TG_OP,1,1),                         -- action
         NULL, NULL,                                   -- row_data, changed_fields
@@ -90,7 +82,7 @@ BEGIN
     IF TG_ARGV[1] IS NOT NULL THEN
         excluded_cols = TG_ARGV[1]::text[];
     END IF;
-    
+
     IF (TG_OP = 'UPDATE' AND TG_LEVEL = 'ROW') THEN
         audit_row.row_data = hstore(OLD.*) - excluded_cols;
         audit_row.changed_fields =  (hstore(NEW.*) - audit_row.row_data) - excluded_cols;
@@ -108,7 +100,10 @@ BEGIN
         RAISE EXCEPTION '[audit.if_modified_func] - Trigger func added as trigger for unhandled case: %, %',TG_OP, TG_LEVEL;
         RETURN NULL;
     END IF;
-    INSERT INTO audit.logged_actions VALUES (audit_row.*);
+    BEGIN
+        EXECUTE format('INSERT INTO audit.%I VALUES (($1).*)', TG_TABLE_NAME)
+        USING audit_row;
+    END;
     RETURN NULL;
 END;
 $body$
@@ -161,16 +156,14 @@ BEGIN
     EXECUTE 'DROP TRIGGER IF EXISTS audit_trigger_row ON ' || quote_ident(target_table::TEXT);
     EXECUTE 'DROP TRIGGER IF EXISTS audit_trigger_stm ON ' || quote_ident(target_table::TEXT);
     EXECUTE 'CREATE TABLE IF NOT EXISTS audit.' || quote_ident(target_table::TEXT) ||
-        '(
-          CHECK (table_name = ' || quote_ident(target_table::TEXT) || ')
-        INHERITS (audit.logged_actions);';
+        ' () INHERITS (audit.logged_actions);';
 
     IF audit_rows THEN
         IF array_length(ignored_cols,1) > 0 THEN
             _ignored_cols_snip = ', ' || quote_literal(ignored_cols);
         END IF;
-        _q_txt = 'CREATE TRIGGER audit_trigger_row AFTER INSERT OR UPDATE OR DELETE ON ' || 
-                 quote_ident(target_table::TEXT) || 
+        _q_txt = 'CREATE TRIGGER audit_trigger_row AFTER INSERT OR UPDATE OR DELETE ON ' ||
+                 quote_ident(target_table::TEXT) ||
                  ' FOR EACH ROW EXECUTE PROCEDURE audit.if_modified_func(' ||
                  quote_literal(audit_query_text) || _ignored_cols_snip || ');';
         RAISE NOTICE '%',_q_txt;
