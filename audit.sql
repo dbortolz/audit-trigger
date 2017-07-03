@@ -84,8 +84,9 @@ BEGIN
     END IF;
 
     IF (TG_OP = 'UPDATE' AND TG_LEVEL = 'ROW') THEN
-        audit_row.row_data = hstore(OLD.*) - excluded_cols;
-        audit_row.changed_fields =  (hstore(NEW.*) - audit_row.row_data) - excluded_cols;
+        h_old = hstore(OLD.*) - excluded_cols;
+        audit_row.changed_fields =  (hstore(NEW.*) - h_old) - excluded_cols;
+        audit_row.row_data = slice(h_old, akeys(audit_row.changed_fields));
         IF audit_row.changed_fields = hstore('') THEN
             -- All changed fields are ignored. Skip this update.
             RETURN NULL;
