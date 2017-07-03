@@ -160,6 +160,10 @@ DECLARE
 BEGIN
     EXECUTE 'DROP TRIGGER IF EXISTS audit_trigger_row ON ' || quote_ident(target_table::TEXT);
     EXECUTE 'DROP TRIGGER IF EXISTS audit_trigger_stm ON ' || quote_ident(target_table::TEXT);
+    EXECUTE 'CREATE TABLE IF NOT EXISTS audit.' || quote_ident(target_table::TEXT) ||
+        '(
+          CHECK (table_name = ' || quote_ident(target_table::TEXT) || ')
+        INHERITS (audit.logged_actions);';
 
     IF audit_rows THEN
         IF array_length(ignored_cols,1) > 0 THEN
